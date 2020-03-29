@@ -8,7 +8,7 @@ from Ant import UNIT_STATS
 from Move import Move
 from GameState import *
 from AIPlayerUtils import *
-from _collections import namedtuple
+from collections import namedtuple
 import math
 
 MAX_DEPTH = 5
@@ -55,10 +55,11 @@ class AIPlayer(Player):
         enemyWorkers = getAntList(currentState, 1 - me, (WORKER,))
         enemyFighters = getAntList(currentState, 1 - me, (DRONE, SOLDIER, R_SOLDIER))
         scaryFighters = list(filter(lambda fighter: fighter.coords[1] < 5, enemyFighters))
-        anthill = inventory.getAnthill
+        anthill = inventory.getAnthill()
         droneSource = drones[0].coords if len(drones) > 0 else anthill.coords
         soldierSource = soldiers[0].coords if len(soldiers) > 0 else anthill.coords
 
+        winner = getWinner(currentState)
         food = inventory.foodCount
         enemyFoodCount = enemyInv.foodCount
         numDrones = len(drones)
@@ -85,12 +86,18 @@ class AIPlayer(Player):
                 approxDist(queen.coords, self.bestFood.coords) + 1)
 
         workerCost = 0
-        worker = workers[0]
-        workerCost += self.getWorkerPenalty(currentState, worker.coords)
-        workerCost += self.getWorkerCost(currentState, worker.coords, worker.carrying)
+        workerCoords = workers[0].coords if len(workers) > 0 else anthill.coords
+        workerCarrying = workers[0].carrying if len(workers) > 0 else False
+        workerCost += self.getWorkerPenalty(currentState, workerCoords)
+        workerCost += self.getWorkerCost(currentState, workerCoords, workerCarrying)
         roundTripCost = self.getWorkerCost(currentState, anthill.coords, False)
 
-        return (food, enemyFoodCount, numDrones, numSoldiers, numWorkers, numEnemyWorkers,
+        Features = namedtuple("Features", ["winner", "foodCount", "enemyFoodCount",
+                "numDrones", "numSolders", "numWorkers", "numEnemyWorkers",
+                "numScaryFighters", "droneDist", "soldierDist", "queenPenalty",
+                "workerCost", "roundTripCost"])
+
+        return Features(winner, food, enemyFoodCount, numDrones, numSoldiers, numWorkers, numEnemyWorkers,
                 numScaryFighters, droneDist, soldierDist, queenPenalty, workerCost, roundTripCost)
 
     ##
@@ -161,7 +168,7 @@ class AIPlayer(Player):
         if self.isFirstTurn:
             self.firstTurn(currentState)
         return min(listAllLegalMoves(currentState), key=lambda x:
-            self.heuristicStepsToGoal(getNextState(currentState, x)))
+            self.heuristicStepsToGoal(self.extractFeatures(getNextState(currentState, x))))
 
         ##
         # firstTurn
@@ -264,56 +271,33 @@ class AIPlayer(Player):
 
     def heuristicStepsToGoal(self, features):
         # Get common variables
-        me = currentState.whoseTurn
-        workers = getAntList(currentState, me, (WORKER,))
-        inventory = getCurrPlayerInventory(currentState)
-        otherInv = getEnemyInv(None, currentState)
-        anthillCoords = inventory.getAnthill().coords
-        otherAnthillCoords = otherInv.getAnthill().coords
-        foodLeft = FOOD_GOAL - inventory.foodCount + len(workers)
+        foodLeft = FOOD_GOAL - features.foodCount + features.numWorkers
 
-        winner = getWinner(currentState)
+        winner = features.winner
         # Special case
         if winner == 1:
             return 0
         elif winner == 0:
             return 1000  # arbitraryily bad
-        elif foodLeft == 0 and getAntAt(currentState, anthillCoords).carrying:
-            return 0
 
         # Prevent a jam where we have no food or workers but keep killing Booger drones by having all units rush the anthill
-        if inventory.foodCount == 0 and len(workers) == 0:
-            return sum(map(lambda ant: self.movesToReach(currentState, ant.coords, otherAnthillCoords, ant.type),
-                           inventory.ants))
+        # if features.foodCount == 0 and features.numWorkers == 0:
+        #     return sum(map(lambda ant: self.movesToReach(currentState, ant.coords, otherAnthillCoords, ant.type),
+        #                    inventory.ants))
 
         # State variables used to compute total heuristic
         adjustment = 0  # Penalty added for being in a board state likely to lose.
         wantWorker = True  # Whether we should see a bonus from having extra workers.
         # Lets us buy defense instead of workers when necessary
 
-        # Unit variables
-        drones = getAntList(currentState, me, (DRONE,))
-        enemyWorkers = getAntList(currentState, 1 - me, (WORKER,))
-        enemyFighters = getAntList(currentState, 1 - me, (DRONE, SOLDIER, R_SOLDIER))
-        scaryFighters = list(filter(lambda fighter: fighter.coords[1] < 5, enemyFighters))
-        soldiers = getAntList(currentState, me, (SOLDIER,))
-
         # If the other player is ahead on food or we have a drone, send a drone to kill workers
-        if (otherInv.foodCount >= inventory.foodCount and len(enemyWorkers) > 0) or len(drones) > 0:
-            source = None
-            if len(drones) == 0:
+        if (features.enemyFoodCount >= features.foodCount and features.numEnemyWorkers > 0) or features.numDrones > 0:
+            if features.numDrones == 0:
                 adjustment += 1
-                source = anthillCoords
                 wantWorker = False
                 foodLeft += UNIT_STATS[DRONE][COST]
-            else:
-                source = drones[0].coords
 
-            if len(enemyWorkers) > 0:
-                adjustment += sum(map(lambda enemyWorker: \
-                                          self.movesToReach(currentState, source, enemyWorker.coords, DRONE),
-                                      enemyWorkers))
-            adjustment += self.movesToReach(currentState, source, otherInv.getAnthill().coords, DRONE)
+            adjustment += features.droneDist
 
             # elif len(drones) > 0:
             #     # In this case, no reason to just have the drone lying around, so we charge the anthill
@@ -322,103 +306,72 @@ class AIPlayer(Player):
             #             self.movesToReach(currentState, drones[0].coords, otherInv.getAnthill().coords, DRONE) + 1)
 
         # If there are enemy units in our territory, fight them and retreat workers and queen
-        if len(scaryFighters) > 0:
+        if features.numScaryFighters > 0:
             # We are going to increment adjustment by the number of moves necessary for a soldier
             # to reach all the enemy units
             # We are also going to give us a food alloance to buy the soldier
-            start = None  # Start of movement paths
-            if len(soldiers) == 0:
+            if features.numSolders == 0:
                 wantWorker = False
-                adjustment += len(scaryFighters)  # Penalty to incentivize buy
                 foodLeft += UNIT_STATS[SOLDIER][COST]
-                start = anthillCoords
-            else:
-                adjustment += len(scaryFighters)
-                start = soldiers[0].coords
-            adjustment += sum(
-                map(lambda target: self.movesToReach(currentState, start, target.coords, SOLDIER), scaryFighters))
+            adjustment += features.numScaryFighters
 
             # Retreat workers and queen
             # We ignore this once workers are dead b/c Booger stops playing so there is no longer reason to retreat
             # (and we will jam from perpetual retreat otherwise)
-            if len(enemyWorkers) > 0:
-                # Find squares under attack
-                for enemy in enemyFighters:
-                    for coord in listAttackable(enemy.coords,
-                                                UNIT_STATS[enemy.type][MOVEMENT] + UNIT_STATS[enemy.type][RANGE]):
-                        ant = getAntAt(currentState, coord)
-                        # Gently encourage retreat
-                        if ant != None and ant.player == me:
-                            adjustment += 1 if ant.type == WORKER or ant.type == QUEEN else 0
+            # if features.numEnemyWorkers > 0:
+            #     # Find squares under attack
+            #     for enemy in enemyFighters:
+            #         for coord in listAttackable(enemy.coords,
+            #                                     UNIT_STATS[enemy.type][MOVEMENT] + UNIT_STATS[enemy.type][RANGE]):
+            #             ant = getAntAt(currentState, coord)
+            #             # Gently encourage retreat
+            #             if ant != None and ant.player == me:
+            #                 adjustment += 1 if ant.type == WORKER or ant.type == QUEEN else 0
 
-                        # If anthill in danger, double soldier food allowance and make threatening enemy high priority
-                        # Also, this prevents a jam where drone by anthill keeps killing worker while soldier
-                        #   is busy killing the newly-spawned drones
-                        # These penalties are arbitrary but seem to get the job done
-                        if coord == anthillCoords:
-                            if len(soldiers) == 0:
-                                wantWorker = False
-                                foodLeft += UNIT_STATS[SOLDIER][COST]
-                            adjustment += self.movesToReach(currentState, enemy.coords, start,
-                                                            SOLDIER) * 10  # Arbitrary to make the priority
+            #             # If anthill in danger, double soldier food allowance and make threatening enemy high priority
+            #             # Also, this prevents a jam where drone by anthill keeps killing worker while soldier
+            #             #   is busy killing the newly-spawned drones
+            #             # These penalties are arbitrary but seem to get the job done
+            #             if coord == anthillCoords:
+            #                 if len(soldiers) == 0:
+            #                     wantWorker = False
+            #                     foodLeft += UNIT_STATS[SOLDIER][COST]
+            #                 adjustment += self.movesToReach(currentState, enemy.coords, start,
+            #                                                 SOLDIER) * 10  # Arbitrary to make the priority
 
-        # Encourage soldiers to storm the anthill
-        start = None
-        if len(soldiers) > 0:
-            start = soldiers[0].coords
-        else:
-            start = anthillCoords
-        adjustment += self.movesToReach(currentState, start, otherAnthillCoords, SOLDIER)
+        adjustment += features.soldierDist
 
         # We need a fake worker count to prevent dividing by zero
         # If we don't have a worker, we also allot a food alloance to buy one if we don't have defense units we were saving for
-        workerCount = len(workers)
+        workerCount = features.numWorkers
         if workerCount == 0:
             foodLeft += UNIT_STATS[WORKER][COST]
             workerCount = 1
 
-        # Could not get rid of three worker jams without search
+        # Could not get rid of worker jams without search
         # So this is an arbitrary penalty to punish the agent for building extra workers
-        # TODO: Remove for part 2
         if workerCount > 1:
             adjustment += 20
             workerCount = 1
 
         # Prevent queen from jamming workers
-        queen = inventory.getQueen()
-        adjustment += 120.0 / (approxDist(queen.coords, self.bestFoodConstr.coords) + 1) + 120.0 / (
-                approxDist(queen.coords, self.bestFood.coords) + 1)
+        adjustment += features.queenPenalty
 
         # After all workers deliver food, how many trips from the construct to the food and back will we need to end the game
-        foodRuns = foodLeft - len(workers)
+        foodRuns = foodLeft - features.numWorkers
 
-        raw = 0  # Raw estimate assuming we do not have an opponent
-        costs = []  # Cost of each worker to deliver food
-        for worker in workers:
-            raw += self.getWorkerPenalty(currentState, worker.coords)
-            costs.append(self.getWorkerCost(currentState, worker.coords, worker.carrying))
-
-        # First, calculate worker moves + end turns for all workers to deliver food
-        if foodLeft < workerCount:
-            sortedWorkers = sorted(costs)
-            raw = sum(sortedWorkers[:foodLeft])
-        elif len(workers) > 0:
-            raw = sum(costs)
-        else:
-            # Cost for our phantom worker to gather food
-            raw = self.getWorkerCost(currentState, anthillCoords, False)
-
+        raw = features.workerCost # Raw estimate assuming we do not have an opponent
         if raw <= 1:
             return 0
 
         # Now, calculate cost to complete all the necessary full trips to gather all food
         if foodRuns > 0:
-            actions = self.getWorkerCost(currentState, inventory.getAnthill().coords, False, True) * foodRuns
+            actions = features.roundTripCost * foodRuns
 
             # Add actions plus estimated cost of end turns
             # To prevent incentivizing worker when we need defense, we prentend there is one worker for this calculation
             #   when we do not want a worker
-            raw += actions + math.ceil(actions / workerCount) if wantWorker else 2 * actions
+            raw += 2 * actions
 
         # Max 1 food per turn, so we cannot go under the number of food remaining
         raw = max(raw, foodLeft)
@@ -427,18 +380,6 @@ class AIPlayer(Player):
         # Casting to float makes the linter evaluate the return value correctly
         # (and makes our return value consistently float rather than occasionaly)
         return float(raw + adjustment)
-
-        ## Finds the number of move actions it will take to reach a given destination
-
-    def movesToReach(self, currentState, source, dest, unitType):
-        taxicabDist = abs(dest[0] - source[0]) + abs(dest[1] - source[1])
-        cost = float(taxicabDist)
-        # Ceiling for workers creates a set of equidistant points they may choose between
-        # Since the move to stay still is always the last in the list,
-        # this encourages the worker to move between equidistant points when stuck
-        # This repositioning helps clear up most worker jams so they will always gather food
-        # return cost if unitType != WORKER else float(math.ceil(cost))
-        return cost
 
     ##
     #getAttack
