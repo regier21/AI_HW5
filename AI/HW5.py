@@ -10,6 +10,7 @@ from GameState import *
 from AIPlayerUtils import *
 from collections import namedtuple
 import math
+import sympy as sym
 
 MAX_DEPTH = 5
 FOOD_CONSTR_PENALTY = MAX_DEPTH + 1
@@ -99,6 +100,47 @@ class AIPlayer(Player):
 
         return Features(winner, food, enemyFoodCount, numDrones, numSoldiers, numWorkers, numEnemyWorkers,
                 numScaryFighters, droneDist, soldierDist, queenPenalty, workerCost, roundTripCost)
+
+    class layer:
+        def __init__(self, inputs, weights, bias):
+            self.inputs = inputs
+            self.weights = weights
+            self.bias = bias
+
+        def map(self, inputs):
+            mappedVals = []
+            mappedInputs = []
+            for feature in inputs:
+                for value in feature:
+                    value = value / max(feature)
+                    mappedVals.append(value)
+            mappedInputs.append(mappedVals)
+            return mappedInputs
+
+        def eval(self):
+            mappedInputs = map(self.inputs)
+            output = 0
+            #TODO: insert eval function here
+
+            return output
+
+        def getError(self, output, expectedVal):
+            return expectedVal - output
+
+        def correctWeights(self, output, expectedVal, learningRate, inputs, weights):
+            error = self.getError(output, expectedVal)
+            x = sym.Symbol('x')
+            #TODO: add real function
+            function = sym.diff(x**5)
+            newWeights = []
+            weightsPerInput = []
+            for weight in weights:
+                for input in inputs:
+                    newWeight = weight + learningRate * error * function * input
+                    weightsPerInput.append(newWeight)
+                newWeights.append(sum(weightsPerInput) / len(weightsPerInput))
+            return newWeights
+
 
     ##
     #getPlacement
@@ -269,7 +311,7 @@ class AIPlayer(Player):
         #
         #
 
-    def heuristicStepsToGoal(self, features):
+    def heuristicStepsToGoal(self, currentState, features):
         # Get common variables
         foodLeft = FOOD_GOAL - features.foodCount + features.numWorkers
 
