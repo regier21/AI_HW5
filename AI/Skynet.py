@@ -326,9 +326,9 @@ class AIPlayer(Player):
         # Could not get rid of three worker jams without search
         # So this is an arbitrary penalty to punish the agent for building extra workers
         # TODO: Remove for part 2
-        # if workerCount > 1:
-        #     adjustment += 20
-        #     workerCount = 1
+        if workerCount > 1:
+             adjustment += 20
+             workerCount = 1
 
             # Prevent queen from jamming workers
         queen = inventory.getQueen()
