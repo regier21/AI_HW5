@@ -14,6 +14,7 @@ import math
 MAX_DEPTH = 5
 FOOD_CONSTR_PENALTY = MAX_DEPTH + 1
 TUNNEL_CONSTR_PENALTY = 2 * FOOD_CONSTR_PENALTY
+STALEMATE_TURNS = 250
 
 
 ##
@@ -60,6 +61,8 @@ class AIPlayer(Player):
         soldierSource = soldiers[0].coords if len(soldiers) > 0 else anthill.coords
 
         winner = getWinner(currentState)
+        if winner == None:
+            winner = 0.5
         food = inventory.foodCount
         enemyFoodCount = enemyInv.foodCount
         numDrones = len(drones)
@@ -167,8 +170,28 @@ class AIPlayer(Player):
     def getMove(self, currentState):
         if self.isFirstTurn:
             self.firstTurn(currentState)
-        return min(listAllLegalMoves(currentState), key=lambda x:
-            self.heuristicStepsToGoal(self.extractFeatures(getNextState(currentState, x))))
+        elif self.turnsPlayed > STALEMATE_TURNS:
+            workers = getAntList(currentState, currentState.whoseTurn, (WORKER,))
+            for worker in workers:
+                if not worker.hasMoved:
+                    return Move(MOVE_ANT, createPathToward(currentState, worker.coords, self.enemyHill.coords, UNIT_STATS[WORKER][MOVEMENT]))
+            return Move(END)
+        bestH = 100000000
+        bestMove = None
+        for move in listAllLegalMoves(currentState):
+            features = self.extractFeatures(getNextState(currentState, move))
+            h = self.heuristicStepsToGoal(features)
+            for val in features:
+                print(val, end=",")
+            print(h)
+            if h < bestH:
+                bestH = h
+                bestMove = move
+        if bestMove.moveType == END:
+            self.turnsPlayed += 1
+        return bestMove
+        #return min(listAllLegalMoves(currentState), key=lambda x:
+        #    self.heuristicStepsToGoal(self.extractFeatures(getNextState(currentState, x))))
 
         ##
         # firstTurn
@@ -230,7 +253,7 @@ class AIPlayer(Player):
         foods = getConstrList(currentState, None, (FOOD,))
         enemyInv = getEnemyInv(None, currentState)
         enemyTunnel = enemyInv.getTunnels()[0]
-        enemyHill = enemyInv.getAnthill()
+        self.enemyHill = enemyInv.getAnthill()
 
         minDist = 100000  # arbitrarily large
 
@@ -247,16 +270,8 @@ class AIPlayer(Player):
                 self.bestFoodConstr = hill
 
         self.foodDist = minDist
+        self.turnsPlayed = 0
         self.isFirstTurn = False
-        self.bestAligned = False
-        self.alignmentAxis = None
-
-        if self.bestFood.coords[0] == self.bestFoodConstr.coords[0]:
-            self.bestAligned = True
-            self.alignmentAxis = 'x'
-        elif self.bestFood.coords[1] == self.bestFoodConstr.coords[1]:
-            self.bestAligned = True
-            self.alignmentAxis = 'y'
 
         ##
         # heuristicStepsToGoal
@@ -405,4 +420,4 @@ class AIPlayer(Player):
 
 ## This function is 0 at 0 and approaches 1 as h approaches infinity
 def normalizeHeuristic(h):
-	return -math.exp1(-h/50.0) #50 was arbitrary to ensure 1 was approached slowly
+	return -math.exp1(-h/500.0) #50 was arbitrary to ensure 1 was approached slowly
