@@ -127,5 +127,6 @@ class AIPlayer(Player):
         #method templaste, not implemented
         pass
 
+## This function is 0 at 0 and approaches 1 as h approaches infinity
 def normalizeHeuristic(h):
-	return -math.exp1(-h/50.0)
+	return -math.exp1(-h/50.0) #50 was arbitrary to ensure 1 was approached slowly
