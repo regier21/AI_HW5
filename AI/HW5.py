@@ -122,8 +122,8 @@ class AIPlayer(Player):
         random.seed() # Reset seed if used later
         size = len(trainingData)
         cutoff = size * 9 // 10 # 90% of data for training, 10% for testing
-        testData = trainingData[cutoff:]
-        trainingData = trainingData[:cutoff]
+        testData = trainingData[-10:]
+        trainingData = trainingData[:10]
 
         print("Training")
         for i in range(GENERATIONS):
@@ -138,10 +138,10 @@ class AIPlayer(Player):
                     normalizedFeatures = Features(*map(normalizeValue, rawFeatures))
                     actual = network.eval(normalizedFeatures)[0]
                     if learning:
-                        network.adjustWeights((normalizedExpected))
+                        network.adjustWeights((normalizedExpected,))
                     error = normalizedExpected - actual
                     totalSquareError += error ** 2
-                print("%s MSE: %f" % (label, totalSquareError / cutoff))
+                print("%s MSE: %f" % (label, totalSquareError / len(data)))
 
             print("Weights:")
             network.printWeights
@@ -155,7 +155,7 @@ class AIPlayer(Player):
             self.layers = []
             for i in range(1, len(layerSizes)):
                 weights = randomMatrix(layerSizes[i-1]+1, layerSizes[i]) # Adding 1 for bias
-                self.layers.append(AIPlayer.Layer(None, weights, None))
+                self.layers.append(AIPlayer.Layer(layerSizes[i], weights, learningRate))
 
         # Given a tuple of normalized features, compute the network output
         def eval(self, features):
@@ -167,7 +167,7 @@ class AIPlayer(Player):
 
         # Using the last evaluated output and the expected output, adjust the weights
         def adjustWeights(self, expected):
-            nextLayerError = [out - expect for out, expect in zip(self.output, expected)]
+            nextLayerError = [expected - out for out, expect in zip(self.output, expected)]
             for layer in reversed(self.layers):
                 error = layer.getErrorTerms(nextLayerError)
                 layer.adjustWeights(nextLayerError)
@@ -175,30 +175,51 @@ class AIPlayer(Player):
 
         # Print all of the weights in the network
         def printWeights(self):
-            pass
+            for layer in self.layers:
+                for row in layer.weights:
+                    print(row)
 
     class Layer:
-        def __init__(self, inputs, weights, bias):
-            self.inputs = inputs
+        def __init__(self, size, weights, learningRate):
+            self.inputs = None
+            self.size = size
             self.weights = weights
-            self.bias = bias
+            self.learningRate = learningRate
 
-        def map(self, inputs):
-            mappedVals = []
-            mappedInputs = []
-            for feature in inputs:
-                for value in feature:
-                    value = value / max(feature)
-                    mappedVals.append(value)
-            mappedInputs.append(mappedVals)
-            return mappedInputs
+        def activate(self, sums):
+            return list(map(sigmoid, sums))
 
         def eval(self, inputs):
-            # mappedInputs = map(self.inputs)
-            # output = 0
-            #TODO: insert eval function here
+            self.inputs = inputs
 
+            sums = []
+            for i in range(self.size):
+                sumWeights = self.weights[i]
+                total = sumWeights[0] # Bias
+                for j in range(1, len(sumWeights)):
+                    total += inputs[j-1] * sumWeights[j]
+                sums.append(total)
+
+            output = self.activate(sums)
+            self.outputs = output
             return output
+
+        # Error - array size of # of outputs
+        # return - array size of # of inputs
+        def getErrorTerms(self, error):
+            self.deltas = []
+            for i in range(self.size):
+                delta = error[i] * self.outputs[i] * (1 - self.outputs[i])
+                self.deltas.append(delta)
+
+            prevError = []
+            for i in range(len(self.inputs)):
+                err = 0
+                for j in range(self.size):
+                    err += self.weights[j][i] * self.deltas[j]
+                prevError.append(err)
+
+            return prevError
 
         def getError(self, output, expectedVal):
             return expectedVal - output
@@ -219,10 +240,10 @@ class AIPlayer(Player):
             return newWeights
 
         def adjustWeights(self, error):
-            pass
-
-        def getErrorTerms(self, error):
-            pass
+            for i in range(len(self.weights)):
+                for j in range(len(self.weights[i])):
+                    weightInput = self.inputs[j-1] if j > 0 else 1 # Deal with bias
+                    self.weights[i][j] += self.learningRate * self.deltas[i] * weightInput
 
     ##
     #getPlacement
@@ -366,7 +387,7 @@ class AIPlayer(Player):
         return cost
 
     def firstTurn(self, currentState):
-        self.train(TRAINING_FILE, AIPlayer.NeuralNetwork([14, 5, 1], 0.05))
+        self.train(TRAINING_FILE, AIPlayer.NeuralNetwork([13, 5, 1], 0.05))
         inventory = getCurrPlayerInventory(currentState)
         tunnel = inventory.getTunnels()[0]
         hill = inventory.getAnthill()
@@ -544,3 +565,9 @@ def normalizeValue(x):
 
 def randomMatrix(x, y):
     return [[random.uniform(-1, 1) for _ in range(x)] for __ in range(y)]
+
+def sigmoid(x):
+    return 1.0 / (1 + math.exp(-x))
+
+def sigmoidPrime(x):
+    return sigmoid(x) * (1 - sigmoid(x))
