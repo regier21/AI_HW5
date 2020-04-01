@@ -10,12 +10,21 @@ from GameState import *
 from AIPlayerUtils import *
 from collections import namedtuple
 import math
-import sympy as sym
+# import sympy as sym
+import csv
 
 MAX_DEPTH = 5
 FOOD_CONSTR_PENALTY = MAX_DEPTH + 1
 TUNNEL_CONSTR_PENALTY = 2 * FOOD_CONSTR_PENALTY
 STALEMATE_TURNS = 250
+GENERATIONS = 5
+SEED = 12345
+TRAINING_FILE = "./training.csv"
+
+Features = namedtuple("Features", ["winner", "foodCount", "enemyFoodCount",
+                "numDrones", "numSolders", "numWorkers", "numEnemyWorkers",
+                "numScaryFighters", "droneDist", "soldierDist", "queenPenalty",
+                "workerCost", "roundTripCost"])
 
 
 ##
@@ -45,6 +54,8 @@ class AIPlayer(Player):
         self.enemyFoodDist = None
         self.bestFoodConstr = None
         self.bestFood = None
+        # self.file = open(TRAINING_FILE, "w", newline='')
+        # self.writer = csv.writer(self.file)
 
     def extractFeatures(self, currentState):
         me = currentState.whoseTurn
@@ -96,15 +107,77 @@ class AIPlayer(Player):
         workerCost += self.getWorkerCost(currentState, workerCoords, workerCarrying)
         roundTripCost = self.getWorkerCost(currentState, anthill.coords, False)
 
-        Features = namedtuple("Features", ["winner", "foodCount", "enemyFoodCount",
-                "numDrones", "numSolders", "numWorkers", "numEnemyWorkers",
-                "numScaryFighters", "droneDist", "soldierDist", "queenPenalty",
-                "workerCost", "roundTripCost"])
-
         return Features(winner, food, enemyFoodCount, numDrones, numSoldiers, numWorkers, numEnemyWorkers,
                 numScaryFighters, droneDist, soldierDist, queenPenalty, workerCost, roundTripCost)
 
-    class layer:
+    def train(self, trainingPath, network):
+        print("Reading training data")
+        trainingData = []
+        with open(trainingPath, newline="") as file:
+            reader = csv.reader(file)
+            for line in reader:
+                trainingData.append(list(map(lambda x: float(x), line)))
+        random.seed(SEED)
+        random.shuffle(trainingData)
+        random.seed() # Reset seed if used later
+        size = len(trainingData)
+        cutoff = size * 9 // 10 # 90% of data for training, 10% for testing
+        testData = trainingData[cutoff:]
+        trainingData = trainingData[:cutoff]
+
+        print("Training")
+        for i in range(GENERATIONS):
+            print("----- Generation: %d -----" % i)
+
+            for data, learning, label in ((trainingData, True, "Training"), (testData, False, "Test")):
+                totalSquareError = 0
+                for state in data:
+                    expected = state[-1]
+                    normalizedExpected = normalizeValue(expected)
+                    rawFeatures = state[:-1]
+                    normalizedFeatures = Features(*map(normalizeValue, rawFeatures))
+                    actual = network.eval(normalizedFeatures)[0]
+                    if learning:
+                        network.adjustWeights((normalizedExpected))
+                    error = normalizedExpected - actual
+                    totalSquareError += error ** 2
+                print("%s MSE: %f" % (label, totalSquareError / cutoff))
+
+            print("Weights:")
+            network.printWeights
+            print()
+
+    class NeuralNetwork:
+
+        # First item in layerSizes is number of inputs, last is number of outputs
+        def __init__(self, layerSizes, learningRate):
+            self.learningRate = learningRate
+            self.layers = []
+            for i in range(1, len(layerSizes)):
+                weights = randomMatrix(layerSizes[i-1]+1, layerSizes[i]) # Adding 1 for bias
+                self.layers.append(AIPlayer.Layer(None, weights, None))
+
+        # Given a tuple of normalized features, compute the network output
+        def eval(self, features):
+            nextLayerIn = features
+            for layer in self.layers:
+                nextLayerIn = layer.eval(nextLayerIn)
+            self.output = nextLayerIn
+            return nextLayerIn
+
+        # Using the last evaluated output and the expected output, adjust the weights
+        def adjustWeights(self, expected):
+            nextLayerError = [out - expect for out, expect in zip(self.output, expected)]
+            for layer in reversed(self.layers):
+                error = layer.getErrorTerms(nextLayerError)
+                layer.adjustWeights(nextLayerError)
+                nextLayerError = error
+
+        # Print all of the weights in the network
+        def printWeights(self):
+            pass
+
+    class Layer:
         def __init__(self, inputs, weights, bias):
             self.inputs = inputs
             self.weights = weights
@@ -120,9 +193,9 @@ class AIPlayer(Player):
             mappedInputs.append(mappedVals)
             return mappedInputs
 
-        def eval(self):
-            mappedInputs = map(self.inputs)
-            output = 0
+        def eval(self, inputs):
+            # mappedInputs = map(self.inputs)
+            # output = 0
             #TODO: insert eval function here
 
             return output
@@ -132,9 +205,10 @@ class AIPlayer(Player):
 
         def correctWeights(self, output, expectedVal, learningRate, inputs, weights):
             error = self.getError(output, expectedVal)
-            x = sym.Symbol('x')
-            #TODO: add real function
-            function = sym.diff(x**5)
+            # x = sym.Symbol('x')
+            # #TODO: add real function
+            # function = sym.diff(x**5)
+            function = 1
             newWeights = []
             weightsPerInput = []
             for weight in weights:
@@ -144,6 +218,11 @@ class AIPlayer(Player):
                 newWeights.append(sum(weightsPerInput) / len(weightsPerInput))
             return newWeights
 
+        def adjustWeights(self, error):
+            pass
+
+        def getErrorTerms(self, error):
+            pass
 
     ##
     #getPlacement
@@ -223,9 +302,7 @@ class AIPlayer(Player):
         for move in listAllLegalMoves(currentState):
             features = self.extractFeatures(getNextState(currentState, move))
             h = self.heuristicStepsToGoal(features)
-            for val in features:
-                print(val, end=",")
-            print(h)
+            # self.writer.writerow(features + (h,))
             if h < bestH:
                 bestH = h
                 bestMove = move
@@ -289,6 +366,7 @@ class AIPlayer(Player):
         return cost
 
     def firstTurn(self, currentState):
+        self.train(TRAINING_FILE, AIPlayer.NeuralNetwork([14, 5, 1], 0.05))
         inventory = getCurrPlayerInventory(currentState)
         tunnel = inventory.getTunnels()[0]
         hill = inventory.getAnthill()
@@ -326,7 +404,7 @@ class AIPlayer(Player):
         #
         #
 
-    def heuristicStepsToGoal(self, currentState, features):
+    def heuristicStepsToGoal(self, features):
         # Get common variables
         foodLeft = FOOD_GOAL - features.foodCount + features.numWorkers
 
@@ -460,6 +538,9 @@ class AIPlayer(Player):
         #method templaste, not implemented
         pass
 
-## This function is 0 at 0 and approaches 1 as h approaches infinity
-def normalizeHeuristic(h):
-	return -math.exp1(-h/500.0) #50 was arbitrary to ensure 1 was approached slowly
+## This function is 0 at 0 and approaches 1 as x approaches infinity
+def normalizeValue(x):
+	return -math.exp(-x/500.0)+1 #50 was arbitrary to ensure 1 was approached slowly
+
+def randomMatrix(x, y):
+    return [[random.uniform(-1, 1) for _ in range(x)] for __ in range(y)]
