@@ -17,9 +17,10 @@ MAX_DEPTH = 5
 FOOD_CONSTR_PENALTY = MAX_DEPTH + 1
 TUNNEL_CONSTR_PENALTY = 2 * FOOD_CONSTR_PENALTY
 STALEMATE_TURNS = 250
-GENERATIONS = 5
+GENERATIONS = 20
 SEED = 12345
 TRAINING_FILE = "./training.csv"
+EPSILON = 0.0001
 
 Features = namedtuple("Features", ["winner", "foodCount", "enemyFoodCount",
                 "numDrones", "numSolders", "numWorkers", "numEnemyWorkers",
@@ -121,9 +122,11 @@ class AIPlayer(Player):
         random.shuffle(trainingData)
         random.seed() # Reset seed if used later
         size = len(trainingData)
-        cutoff = size * 9 // 10 # 90% of data for training, 10% for testing
-        testData = trainingData[-10:]
-        trainingData = trainingData[:10]
+        cutoff = size * 8 // 10 # 90% of data for training, 10% for testing
+        testData = trainingData[:cutoff]
+        trainingData = trainingData[cutoff:]
+
+        
 
         print("Training")
         for i in range(GENERATIONS):
@@ -138,13 +141,13 @@ class AIPlayer(Player):
                     normalizedFeatures = Features(*map(normalizeValue, rawFeatures))
                     actual = network.eval(normalizedFeatures)[0]
                     if learning:
-                        network.adjustWeights((normalizedExpected,))
+                        network.adjustWeights([normalizedExpected])
                     error = normalizedExpected - actual
                     totalSquareError += error ** 2
                 print("%s MSE: %f" % (label, totalSquareError / len(data)))
 
             print("Weights:")
-            network.printWeights
+            network.printWeights()
             print()
 
     class NeuralNetwork:
@@ -167,11 +170,47 @@ class AIPlayer(Player):
 
         # Using the last evaluated output and the expected output, adjust the weights
         def adjustWeights(self, expected):
-            nextLayerError = [expected - out for out, expect in zip(self.output, expected)]
+            adjustments = []
+            nextLayerError = [(expect - out) for out, expect in zip(self.output, expected)]
             for layer in reversed(self.layers):
                 error = layer.getErrorTerms(nextLayerError)
-                layer.adjustWeights(nextLayerError)
+                adjustment = layer.adjustWeights(nextLayerError)
+                adjustments.append(adjustment)
                 nextLayerError = error
+            return reversed(adjustments)
+
+        def getDerivative(self, features, expected):
+            derivatives = []
+            for layer in self.layers:
+                layerDerivative = []
+                for row in layer.weights:
+                    rowDerivative = []
+                    for i in range(len(row)):
+                        originalWeight = row[i]
+                        row[i] = originalWeight + EPSILON
+                        outHigh = self.eval(features)[0]
+                        errHigh = 0.5 * (expected - outHigh) ** 2
+                        row[i] = originalWeight - EPSILON
+                        outLow = self.eval(features)[0]
+                        errLow = 0.5 * (expected - outLow) ** 2
+                        row[i] = originalWeight
+                        rowDerivative.append((errHigh - errLow)/(2*EPSILON))
+                    layerDerivative.append(rowDerivative)
+                derivatives.append(layerDerivative)
+            return derivatives
+
+        # Test to make sure backprop is correct
+        def gradientCheck(self, features, expected):
+            derivatives = self.getDerivative(features, expected)
+            actual = self.eval(features)[0]
+            adjustments = self.adjustWeights([expected])
+            for ld, la in zip(derivatives, adjustments):
+                for rd, ra in zip(ld, la):
+                    for d, a in zip(rd, ra):
+                        if d != 0 and a != 0:
+                            if abs(- a - d)/max(abs(a), abs(d)) > 0.00000001:
+                                return False
+            return True
 
         # Print all of the weights in the network
         def printWeights(self):
@@ -216,7 +255,7 @@ class AIPlayer(Player):
             for i in range(len(self.inputs)):
                 err = 0
                 for j in range(self.size):
-                    err += self.weights[j][i] * self.deltas[j]
+                    err += self.weights[j][i+1] * self.deltas[j]
                 prevError.append(err)
 
             return prevError
@@ -240,10 +279,16 @@ class AIPlayer(Player):
             return newWeights
 
         def adjustWeights(self, error):
+            changes = []
             for i in range(len(self.weights)):
+                changeRow = []
                 for j in range(len(self.weights[i])):
                     weightInput = self.inputs[j-1] if j > 0 else 1 # Deal with bias
-                    self.weights[i][j] += self.learningRate * self.deltas[i] * weightInput
+                    change = self.deltas[i] * weightInput
+                    changeRow.append(change)
+                    self.weights[i][j] += self.learningRate * change
+                changes.append(changeRow)
+            return changes
 
     ##
     #getPlacement
@@ -387,7 +432,7 @@ class AIPlayer(Player):
         return cost
 
     def firstTurn(self, currentState):
-        self.train(TRAINING_FILE, AIPlayer.NeuralNetwork([13, 5, 1], 0.05))
+        self.train(TRAINING_FILE, AIPlayer.NeuralNetwork([13, 30, 1], 0.05))
         inventory = getCurrPlayerInventory(currentState)
         tunnel = inventory.getTunnels()[0]
         hill = inventory.getAnthill()
