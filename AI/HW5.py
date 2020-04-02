@@ -17,10 +17,14 @@ MAX_DEPTH = 5
 FOOD_CONSTR_PENALTY = MAX_DEPTH + 1
 TUNNEL_CONSTR_PENALTY = 2 * FOOD_CONSTR_PENALTY
 STALEMATE_TURNS = 250
-GENERATIONS = 20
+GENERATIONS = 100
 SEED = 12345
 TRAINING_FILE = "./training.csv"
+WEIGHTS_FILE = None #"./weights2.txt"
 EPSILON = 0.0001
+LEARNING_RATE = 0.1
+TRAIN = True
+LAYERS = [13, 50, 20, 1]
 
 Features = namedtuple("Features", ["winner", "foodCount", "enemyFoodCount",
                 "numDrones", "numSolders", "numWorkers", "numEnemyWorkers",
@@ -55,6 +59,7 @@ class AIPlayer(Player):
         self.enemyFoodDist = None
         self.bestFoodConstr = None
         self.bestFood = None
+        self.network = AIPlayer.NeuralNetwork(LAYERS, LEARNING_RATE, WEIGHTS_FILE)
         # self.file = open(TRAINING_FILE, "w", newline='')
         # self.writer = csv.writer(self.file)
 
@@ -112,6 +117,9 @@ class AIPlayer(Player):
                 numScaryFighters, droneDist, soldierDist, queenPenalty, workerCost, roundTripCost)
 
     def train(self, trainingPath, network):
+        print("Layers: ", end='')
+        print(network.layerSizes)
+
         print("Reading training data")
         trainingData = []
         with open(trainingPath, newline="") as file:
@@ -129,8 +137,10 @@ class AIPlayer(Player):
         
 
         print("Training")
-        for i in range(GENERATIONS):
-            print("----- Generation: %d -----" % i)
+        generation = 0
+        rmse = 1
+        while (generation < GENERATIONS and rmse > 0.025):
+            print("----- Generation: %d -----" % (generation + 1))
 
             for data, learning, label in ((trainingData, True, "Training"), (testData, False, "Test")):
                 totalSquareError = 0
@@ -144,21 +154,47 @@ class AIPlayer(Player):
                         network.adjustWeights([normalizedExpected])
                     error = normalizedExpected - actual
                     totalSquareError += error ** 2
-                print("%s MSE: %f" % (label, totalSquareError / len(data)))
+                mse = totalSquareError / len(data)
+                print("%s MSE: %f" % (label, mse))
+                rmse = math.sqrt(mse)
 
             print("Weights:")
             network.printWeights()
             print()
+            generation += 1
 
     class NeuralNetwork:
 
         # First item in layerSizes is number of inputs, last is number of outputs
-        def __init__(self, layerSizes, learningRate):
+        def __init__(self, layerSizes, learningRate, weightPath=None):
             self.learningRate = learningRate
+            self.layerSizes = layerSizes
             self.layers = []
+            if weightPath:
+                allWeights = self.readWeights(weightPath, layerSizes)
             for i in range(1, len(layerSizes)):
-                weights = randomMatrix(layerSizes[i-1]+1, layerSizes[i]) # Adding 1 for bias
+                weights = []
+                if weightPath:
+                    weights = allWeights[i-1]
+                else:
+                    weights = randomMatrix(layerSizes[i-1]+1, layerSizes[i]) # Adding 1 for bias
                 self.layers.append(AIPlayer.Layer(layerSizes[i], weights, learningRate))
+
+        def readWeights(self, path, layerSizes):
+            weights = []
+            layer = []
+            layerIndex = 1
+            with open(path, "r") as weightFile:
+                for line in weightFile:
+                    values = line[1:-2] # Removes square brackets
+                    layer.append(list(map(float, values.split(', '))))
+                    if len(layer) == layerSizes[layerIndex]:
+                        weights.append(layer)
+                        layer = []
+                        layerIndex += 1
+                        if(layerIndex == len(layerSizes)):
+                            break
+            return(weights)
 
         # Given a tuple of normalized features, compute the network output
         def eval(self, features):
@@ -357,6 +393,7 @@ class AIPlayer(Player):
     def getMove(self, currentState):
         if self.isFirstTurn:
             self.firstTurn(currentState)
+        # Concede game if taking too long
         elif self.turnsPlayed > STALEMATE_TURNS:
             workers = getAntList(currentState, currentState.whoseTurn, (WORKER,))
             for worker in workers:
@@ -365,13 +402,22 @@ class AIPlayer(Player):
             return Move(END)
         bestH = 100000000
         bestMove = None
-        for move in listAllLegalMoves(currentState):
+        totalSquareError = 0
+        moves = listAllLegalMoves(currentState)
+        for move in moves:
             features = self.extractFeatures(getNextState(currentState, move))
             h = self.heuristicStepsToGoal(features)
+            normH = normalizeValue(h)
+            netH = self.network.eval(list(map(normalizeValue, features)))[0]
+            # print("function: %f ----- network: %f" % (normH, netH))
+            totalSquareError += (normH - netH) ** 2
             # self.writer.writerow(features + (h,))
-            if h < bestH:
-                bestH = h
+            if netH < bestH:
+                bestH = netH
                 bestMove = move
+        mse = totalSquareError / len(moves)
+        print("MSE: %f" % mse)
+        print("Best h: %f" % bestH)
         if bestMove.moveType == END:
             self.turnsPlayed += 1
         return bestMove
@@ -432,7 +478,9 @@ class AIPlayer(Player):
         return cost
 
     def firstTurn(self, currentState):
-        self.train(TRAINING_FILE, AIPlayer.NeuralNetwork([13, 30, 1], 0.05))
+        if TRAIN:
+            self.train(TRAINING_FILE, self.network)
+        
         inventory = getCurrPlayerInventory(currentState)
         tunnel = inventory.getTunnels()[0]
         hill = inventory.getAnthill()
@@ -606,7 +654,7 @@ class AIPlayer(Player):
 
 ## This function is 0 at 0 and approaches 1 as x approaches infinity
 def normalizeValue(x):
-	return -math.exp(-x/500.0)+1 #50 was arbitrary to ensure 1 was approached slowly
+	return -math.exp(-x/500.0)+1 #500 was arbitrary to ensure 1 was approached slowly
 
 def randomMatrix(x, y):
     return [[random.uniform(-1, 1) for _ in range(x)] for __ in range(y)]
