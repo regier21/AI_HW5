@@ -20,10 +20,10 @@ STALEMATE_TURNS = 250
 GENERATIONS = 100
 SEED = 12345
 TRAINING_FILE = "./training.csv"
-WEIGHTS_FILE = None #"./weights2.txt"
+WEIGHTS_FILE = "./weights4.txt"
 EPSILON = 0.0001
 LEARNING_RATE = 0.1
-TRAIN = True
+TRAIN = False
 LAYERS = [13, 50, 20, 1]
 
 Features = namedtuple("Features", ["winner", "foodCount", "enemyFoodCount",
@@ -141,6 +141,7 @@ class AIPlayer(Player):
         rmse = 1
         while (generation < GENERATIONS and rmse > 0.025):
             print("----- Generation: %d -----" % (generation + 1))
+            random.shuffle(trainingData)
 
             for data, learning, label in ((trainingData, True, "Training"), (testData, False, "Test")):
                 totalSquareError = 0
