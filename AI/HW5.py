@@ -13,22 +13,28 @@ import math
 # import sympy as sym
 import csv
 
+# Penalties
 MAX_DEPTH = 5
-FOOD_CONSTR_PENALTY = MAX_DEPTH + 1
-TUNNEL_CONSTR_PENALTY = 2 * FOOD_CONSTR_PENALTY
+FOOD_CONSTR_PENALTY = 0
+TUNNEL_CONSTR_PENALTY = 0
+NEED_DRONE_PENALTY = 30
+NEED_SOLDIER_PENALTY = 50
+NEED_WORKER_PENALTY = 100
+
 STALEMATE_TURNS = 250
-GENERATIONS = 100
+GENERATIONS = 150
 SEED = 12345
-TRAINING_FILE = "./training.csv"
-WEIGHTS_FILE = "./weights4.txt"
+TRAINING_FILE = "./training2.csv"
+WEIGHTS_FILE = "./weights_binary.txt"
 EPSILON = 0.0001
 LEARNING_RATE = 0.1
 TRAIN = False
-LAYERS = [13, 50, 20, 1]
+ONLINE_LEARNING = False
+LAYERS = [14, 30, 5, 1]
 
-Features = namedtuple("Features", ["winner", "foodCount", "enemyFoodCount",
-                "numDrones", "numSolders", "numWorkers", "numEnemyWorkers",
-                "numScaryFighters", "droneDist", "soldierDist", "queenPenalty",
+Features = namedtuple("Features", ["foodCount", "enemyMoreFood",
+                "hasDrone", "hasSoldier", "mutlipleWorkers", "hasWorker", "enemyHasWorker",
+                "numScaryFighters", "areScaryFighters", "droneDist", "soldierDist", "queenPenalty",
                 "workerCost", "roundTripCost"])
 
 
@@ -60,6 +66,7 @@ class AIPlayer(Player):
         self.bestFoodConstr = None
         self.bestFood = None
         self.network = AIPlayer.NeuralNetwork(LAYERS, LEARNING_RATE, WEIGHTS_FILE)
+        self.gamesPlayed = 0
         # self.file = open(TRAINING_FILE, "w", newline='')
         # self.writer = csv.writer(self.file)
 
@@ -78,16 +85,20 @@ class AIPlayer(Player):
         droneSource = drones[0].coords if len(drones) > 0 else anthill.coords
         soldierSource = soldiers[0].coords if len(soldiers) > 0 else anthill.coords
 
-        winner = getWinner(currentState)
-        if winner == None:
-            winner = 0.5
         food = inventory.foodCount
         enemyFoodCount = enemyInv.foodCount
+        enemyMoreFood = 1 if enemyFoodCount >= food else 0
         numDrones = len(drones)
+        hasDrone = 1 if numDrones > 0 else 0
         numSoldiers = len(soldiers)
+        hasSoldier = 1 if numSoldiers > 0 else 0
         numEnemyWorkers = len(enemyWorkers)
+        enemyHasWorker = 1 if numEnemyWorkers > 0 else 0
         numScaryFighters = len(scaryFighters)
+        areScaryFighters = 1 if numScaryFighters > 0 else 0
         numWorkers = len(workers)
+        hasWorker = 1 if numWorkers > 0 else 0
+        multipleWorkers = 1 if numWorkers > 1 else 0
 
         #distToFood = 0
 
@@ -107,14 +118,32 @@ class AIPlayer(Player):
                 approxDist(queen.coords, self.bestFood.coords) + 1)
 
         workerCost = 0
-        workerCoords = workers[0].coords if len(workers) > 0 else anthill.coords
-        workerCarrying = workers[0].carrying if len(workers) > 0 else False
+        workerCoords = workers[0].coords if hasWorker else anthill.coords
+        workerCarrying = workers[0].carrying if hasWorker else False
         workerCost += self.getWorkerPenalty(currentState, workerCoords)
         workerCost += self.getWorkerCost(currentState, workerCoords, workerCarrying)
         roundTripCost = self.getWorkerCost(currentState, anthill.coords, False)
 
-        return Features(winner, food, enemyFoodCount, numDrones, numSoldiers, numWorkers, numEnemyWorkers,
-                numScaryFighters, droneDist, soldierDist, queenPenalty, workerCost, roundTripCost)
+        # ["foodCount", "enemyMoreFood",
+        #         "hasDrone", "hasSoldier", "mutlipleWorkers", "hasWorker", "enemyHasWorker",
+        #         "numScaryFighters", "areScaryFighters", "droneDist", "soldierDist", "queenPenalty",
+        #         "workerCost", "roundTripCost"]
+
+        return Features(food, enemyMoreFood, hasDrone,
+            hasSoldier, multipleWorkers, hasWorker, 
+            enemyHasWorker, numScaryFighters, areScaryFighters, 
+            droneDist, soldierDist, queenPenalty, 
+            workerCost, roundTripCost)
+
+    def normalizeFeatures(self, features):
+        # result = list(map(normalizeValue, features))
+        # result[0] = features.foodCount / float(FOOD_GOAL)
+        # result[1] = features.enemyMoreFood
+        # result[5] = features.hasWorker
+        # result[6] = features.enemyHasWorker
+        # result[8] = features.areScaryFighters
+        # return Features(*result)
+        return features
 
     def train(self, trainingPath, network):
         print("Layers: ", end='')
@@ -130,26 +159,24 @@ class AIPlayer(Player):
         random.shuffle(trainingData)
         random.seed() # Reset seed if used later
         size = len(trainingData)
-        cutoff = size * 8 // 10 # 90% of data for training, 10% for testing
+        cutoff = size * 98 // 100 # 98% of data for training, 2% for testing
         testData = trainingData[:cutoff]
         trainingData = trainingData[cutoff:]
 
         
 
         print("Training")
-        generation = 0
-        rmse = 1
-        while (generation < GENERATIONS and rmse > 0.025):
-            print("----- Generation: %d -----" % (generation + 1))
+        for i in range(GENERATIONS):
+            print("----- Generation: %d -----" % (i + 1))
             random.shuffle(trainingData)
 
             for data, learning, label in ((trainingData, True, "Training"), (testData, False, "Test")):
                 totalSquareError = 0
                 for state in data:
                     expected = state[-1]
-                    normalizedExpected = normalizeValue(expected)
+                    normalizedExpected = normalizeHeuristic(expected)
                     rawFeatures = state[:-1]
-                    normalizedFeatures = Features(*map(normalizeValue, rawFeatures))
+                    normalizedFeatures = self.normalizeFeatures(rawFeatures)
                     actual = network.eval(normalizedFeatures)[0]
                     if learning:
                         network.adjustWeights([normalizedExpected])
@@ -157,12 +184,10 @@ class AIPlayer(Player):
                     totalSquareError += error ** 2
                 mse = totalSquareError / len(data)
                 print("%s MSE: %f" % (label, mse))
-                rmse = math.sqrt(mse)
 
             print("Weights:")
             network.printWeights()
             print()
-            generation += 1
 
     class NeuralNetwork:
 
@@ -179,7 +204,11 @@ class AIPlayer(Player):
                     weights = allWeights[i-1]
                 else:
                     weights = randomMatrix(layerSizes[i-1]+1, layerSizes[i]) # Adding 1 for bias
-                self.layers.append(AIPlayer.Layer(layerSizes[i], weights, learningRate))
+                
+                # if i < len(layerSizes) - 1:
+                self.layers.append(AIPlayer.Layer(layerSizes[i], weights, learningRate, sigmoid, sigmoidPrime))
+                # else:
+                #     self.layers.append(AIPlayer.Layer(layerSizes[i], weights, learningRate, relu, reluPrime))
 
         def readWeights(self, path, layerSizes):
             weights = []
@@ -240,12 +269,18 @@ class AIPlayer(Player):
         def gradientCheck(self, features, expected):
             derivatives = self.getDerivative(features, expected)
             actual = self.eval(features)[0]
-            adjustments = self.adjustWeights([expected])
+            adjustments = list(self.adjustWeights([expected]))
+            # print(derivatives)
+            # print(adjustments)
             for ld, la in zip(derivatives, adjustments):
                 for rd, ra in zip(ld, la):
                     for d, a in zip(rd, ra):
+                        # print("%f %f" % (d, a))
                         if d != 0 and a != 0:
-                            if abs(- a - d)/max(abs(a), abs(d)) > 0.00000001:
+                            err = abs(- a - d)
+                            # print(err)
+                            if err > 0.000001:
+                                print(err)
                                 return False
             return True
 
@@ -256,14 +291,17 @@ class AIPlayer(Player):
                     print(row)
 
     class Layer:
-        def __init__(self, size, weights, learningRate):
+        def __init__(self, size, weights, learningRate, activation, activationPrime):
             self.inputs = None
             self.size = size
             self.weights = weights
+            print(self.weights)
             self.learningRate = learningRate
+            self.activation = activation
+            self.activationPrime = activationPrime
 
         def activate(self, sums):
-            return list(map(sigmoid, sums))
+            return list(map(self.activation, sums))
 
         def eval(self, inputs):
             self.inputs = inputs
@@ -276,6 +314,7 @@ class AIPlayer(Player):
                     total += inputs[j-1] * sumWeights[j]
                 sums.append(total)
 
+            self.sums = sums
             output = self.activate(sums)
             self.outputs = output
             return output
@@ -285,7 +324,7 @@ class AIPlayer(Player):
         def getErrorTerms(self, error):
             self.deltas = []
             for i in range(self.size):
-                delta = error[i] * self.outputs[i] * (1 - self.outputs[i])
+                delta = error[i] * self.activationPrime(self.sums[i], self.outputs[i]) #self.outputs[i] * (1 - self.outputs[i])
                 self.deltas.append(delta)
 
             prevError = []
@@ -299,21 +338,6 @@ class AIPlayer(Player):
 
         def getError(self, output, expectedVal):
             return expectedVal - output
-
-        def correctWeights(self, output, expectedVal, learningRate, inputs, weights):
-            error = self.getError(output, expectedVal)
-            # x = sym.Symbol('x')
-            # #TODO: add real function
-            # function = sym.diff(x**5)
-            function = 1
-            newWeights = []
-            weightsPerInput = []
-            for weight in weights:
-                for input in inputs:
-                    newWeight = weight + learningRate * error * function * input
-                    weightsPerInput.append(newWeight)
-                newWeights.append(sum(weightsPerInput) / len(weightsPerInput))
-            return newWeights
 
         def adjustWeights(self, error):
             changes = []
@@ -401,29 +425,27 @@ class AIPlayer(Player):
                 if not worker.hasMoved:
                     return Move(MOVE_ANT, createPathToward(currentState, worker.coords, self.enemyHill.coords, UNIT_STATS[WORKER][MOVEMENT]))
             return Move(END)
+
+        features = self.extractFeatures(currentState)
+
         bestH = 100000000
         bestMove = None
-        totalSquareError = 0
         moves = listAllLegalMoves(currentState)
         for move in moves:
             features = self.extractFeatures(getNextState(currentState, move))
             h = self.heuristicStepsToGoal(features)
-            normH = normalizeValue(h)
-            netH = self.network.eval(list(map(normalizeValue, features)))[0]
-            # print("function: %f ----- network: %f" % (normH, netH))
-            totalSquareError += (normH - netH) ** 2
             # self.writer.writerow(features + (h,))
+            netH = self.network.eval(self.normalizeFeatures(features))[0]
+            # self.totalSquareError += (normalizeHeuristic(h) - netH) ** 2
+            # self.numMovesEvaluated += 1
             if netH < bestH:
                 bestH = netH
                 bestMove = move
-        mse = totalSquareError / len(moves)
-        print("MSE: %f" % mse)
-        print("Best h: %f" % bestH)
+            if ONLINE_LEARNING:
+                self.network.adjustWeights((normalizeHeuristic(h),))
         if bestMove.moveType == END:
             self.turnsPlayed += 1
         return bestMove
-        #return min(listAllLegalMoves(currentState), key=lambda x:
-        #    self.heuristicStepsToGoal(self.extractFeatures(getNextState(currentState, x))))
 
         ##
         # firstTurn
@@ -467,12 +489,6 @@ class AIPlayer(Player):
         if carrying:
             cost = self.movesToReach(currentState, workerCoords, self.bestFoodConstr.coords,
                                      WORKER) + TUNNEL_CONSTR_PENALTY  # Plus one from the penalty for standing on a tunnel
-            # if not isFakeAnt:
-            #     nextCoord = min(listAdjacent(workerCoords),
-            #                     key=lambda dest: approxDist(dest, self.bestFoodConstr.coords))
-            #     ant = getAntAt(currentState, nextCoord)
-            #     if ant != None and not ant.carrying:
-            #         cost += 3  # Lets the other worker move out and back to prevent jam
         else:
             cost = self.movesToReach(currentState, workerCoords, self.bestFood.coords,
                                      WORKER) + self.foodDist + FOOD_CONSTR_PENALTY + TUNNEL_CONSTR_PENALTY  # Plus two from the penalty for standing on the food and tunnel
@@ -507,6 +523,8 @@ class AIPlayer(Player):
         self.foodDist = minDist
         self.turnsPlayed = 0
         self.isFirstTurn = False
+        self.totalSquareError = 0
+        self.numMovesEvaluated = 0
 
         ##
         # heuristicStepsToGoal
@@ -521,33 +539,19 @@ class AIPlayer(Player):
 
     def heuristicStepsToGoal(self, features):
         # Get common variables
-        foodLeft = FOOD_GOAL - features.foodCount + features.numWorkers
-
-        winner = features.winner
-        # Special case
-        if winner == 1:
-            return 0
-        elif winner == 0:
-            return 1000  # arbitraryily bad
-
-        # Prevent a jam where we have no food or workers but keep killing Booger drones by having all units rush the anthill
-        # if features.foodCount == 0 and features.numWorkers == 0:
-        #     return sum(map(lambda ant: self.movesToReach(currentState, ant.coords, otherAnthillCoords, ant.type),
-        #                    inventory.ants))
+        foodLeft = FOOD_GOAL - features.foodCount + features.hasWorker
 
         # State variables used to compute total heuristic
         adjustment = 0  # Penalty added for being in a board state likely to lose.
-        wantWorker = True  # Whether we should see a bonus from having extra workers.
         # Lets us buy defense instead of workers when necessary
 
         # If the other player is ahead on food or we have a drone, send a drone to kill workers
-        if (features.enemyFoodCount >= features.foodCount and features.numEnemyWorkers > 0) or features.numDrones > 0:
-            if features.numDrones == 0:
-                adjustment += 1
-                wantWorker = False
+        if features.enemyMoreFood and features.enemyHasWorker:
+            if not features.hasDrone:
+                adjustment += NEED_DRONE_PENALTY
                 foodLeft += UNIT_STATS[DRONE][COST]
 
-            adjustment += features.droneDist
+        adjustment += features.droneDist
 
             # elif len(drones) > 0:
             #     # In this case, no reason to just have the drone lying around, so we charge the anthill
@@ -556,63 +560,35 @@ class AIPlayer(Player):
             #             self.movesToReach(currentState, drones[0].coords, otherInv.getAnthill().coords, DRONE) + 1)
 
         # If there are enemy units in our territory, fight them and retreat workers and queen
-        if features.numScaryFighters > 0:
+        if features.areScaryFighters:
             # We are going to increment adjustment by the number of moves necessary for a soldier
             # to reach all the enemy units
             # We are also going to give us a food alloance to buy the soldier
-            if features.numSolders == 0:
-                wantWorker = False
+            if not features.hasSoldier:
                 foodLeft += UNIT_STATS[SOLDIER][COST]
+                adjustment += NEED_SOLDIER_PENALTY
             adjustment += features.numScaryFighters
-
-            # Retreat workers and queen
-            # We ignore this once workers are dead b/c Booger stops playing so there is no longer reason to retreat
-            # (and we will jam from perpetual retreat otherwise)
-            # if features.numEnemyWorkers > 0:
-            #     # Find squares under attack
-            #     for enemy in enemyFighters:
-            #         for coord in listAttackable(enemy.coords,
-            #                                     UNIT_STATS[enemy.type][MOVEMENT] + UNIT_STATS[enemy.type][RANGE]):
-            #             ant = getAntAt(currentState, coord)
-            #             # Gently encourage retreat
-            #             if ant != None and ant.player == me:
-            #                 adjustment += 1 if ant.type == WORKER or ant.type == QUEEN else 0
-
-            #             # If anthill in danger, double soldier food allowance and make threatening enemy high priority
-            #             # Also, this prevents a jam where drone by anthill keeps killing worker while soldier
-            #             #   is busy killing the newly-spawned drones
-            #             # These penalties are arbitrary but seem to get the job done
-            #             if coord == anthillCoords:
-            #                 if len(soldiers) == 0:
-            #                     wantWorker = False
-            #                     foodLeft += UNIT_STATS[SOLDIER][COST]
-            #                 adjustment += self.movesToReach(currentState, enemy.coords, start,
-            #                                                 SOLDIER) * 10  # Arbitrary to make the priority
 
         adjustment += features.soldierDist
 
         # We need a fake worker count to prevent dividing by zero
         # If we don't have a worker, we also allot a food alloance to buy one if we don't have defense units we were saving for
-        workerCount = features.numWorkers
-        if workerCount == 0:
+        if not features.hasWorker:
             foodLeft += UNIT_STATS[WORKER][COST]
-            workerCount = 1
+            adjustment += NEED_WORKER_PENALTY
 
         # Could not get rid of worker jams without search
         # So this is an arbitrary penalty to punish the agent for building extra workers
-        if workerCount > 1:
+        if features.mutlipleWorkers:
             adjustment += 20
-            workerCount = 1
 
         # Prevent queen from jamming workers
         adjustment += features.queenPenalty
 
         # After all workers deliver food, how many trips from the construct to the food and back will we need to end the game
-        foodRuns = foodLeft - features.numWorkers
+        foodRuns = foodLeft - 1
 
         raw = features.workerCost # Raw estimate assuming we do not have an opponent
-        if raw <= 1:
-            return 0
 
         # Now, calculate cost to complete all the necessary full trips to gather all food
         if foodRuns > 0:
@@ -651,11 +627,21 @@ class AIPlayer(Player):
     #
     def registerWin(self, hasWon):
         #method templaste, not implemented
-        pass
+        self.gamesPlayed += 1
+        # print("MSE: %f" % (self.totalSquareError / self.numMovesEvaluated))
+        if self.gamesPlayed % 10 == 0:
+            self.network.printWeights()
+            print()
+            print()
+            # if self.gamesPlayed == 750:
+            #     self.file.close()
 
 ## This function is 0 at 0 and approaches 1 as x approaches infinity
 def normalizeValue(x):
-	return -math.exp(-x/500.0)+1 #500 was arbitrary to ensure 1 was approached slowly
+	return -math.exp(-x/50.0)+1 #50 was arbitrary to ensure 1 was approached slowly
+
+def normalizeHeuristic(x):
+    return -math.exp(-x/200.0)+1 #200 was arbitrary to ensure 1 was approached slowly
 
 def randomMatrix(x, y):
     return [[random.uniform(-1, 1) for _ in range(x)] for __ in range(y)]
@@ -663,5 +649,11 @@ def randomMatrix(x, y):
 def sigmoid(x):
     return 1.0 / (1 + math.exp(-x))
 
-def sigmoidPrime(x):
-    return sigmoid(x) * (1 - sigmoid(x))
+def sigmoidPrime(x, y):
+    return y * (1 - y)
+
+def relu(x):
+    return x if x > 0 else 0.2*x
+
+def reluPrime(x, y):
+    return 1 if x > 0 else 0.2
